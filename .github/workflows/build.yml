@@ -72,6 +72,29 @@ jobs:
             --file Containerfile .
           podman run --rm --entrypoint rpm "$IMAGE:latest" -q NetworkManager
 
+      # Rewrite as a chunked ostree image with SELinux labels baked in, like stock Bazzite.
+      # A plain derived layer gets relabeled on the client from the new image's policy, and
+      # the client's older loaded policy rejects any new types (fsetxattr EINVAL on switch).
+      - name: Rechunk
+        if: steps.check.outputs.build == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euxo pipefail
+          graphroot=$(podman info --format '{{.Store.GraphRoot}}')
+          podman run --rm --pull=never --privileged \
+            --mount=type=image,src="$IMAGE:latest",target=/rpm-ostree \
+            --mount=type=bind,src="$graphroot",target=/run/host-container-storage,rw \
+            --mount=type=tmpfs,target=/run/rpm-ostree-storage \
+            --entrypoint /usr/bin/rpm-ostree \
+            "$IMAGE:latest" \
+            compose build-chunked-oci \
+            --max-layers 127 --format-version=2 --bootc \
+            --rootfs /rpm-ostree \
+            --output "containers-storage:[overlay@/run/host-container-storage+/run/rpm-ostree-storage]$IMAGE:latest"
+          podman tag "$IMAGE:latest" "$IMAGE:$VERSION"
+          podman inspect "$IMAGE:latest" --format '{{index .Labels "org.opencontainers.image.base.digest"}} {{index .Labels "ostree.bootable"}}'
+
       - name: Push
         id: push
         if: steps.check.outputs.build == 'true' && github.ref == 'refs/heads/main'
