@@ -21,8 +21,8 @@ jobs=$(nproc); [ "$jobs" -gt 12 ] && jobs=12
 rpmbuild -bb NetworkManager.spec --nocheck --define "_smp_build_ncpus $jobs"
 # The daemon must carry the patch's log message, or the patch didn't apply.
 mkdir /check && rpm2cpio ~/rpmbuild/RPMS/x86_64/NetworkManager-1.*.x86_64.rpm \
-    | (cd /check && cpio -idm --quiet ./usr/sbin/NetworkManager)
-grep -q "kept its connection over suspend" /check/usr/sbin/NetworkManager \
+    | (cd /check && cpio -idm --quiet)
+grep -rq "kept its connection over suspend" /check/usr/*bin/NetworkManager \
     || { echo "patch not applied" >&2; exit 1; }
 cp ~/rpmbuild/RPMS/*/*.rpm /out/
 ls -l /out
