@@ -113,9 +113,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "$TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Push once and copy the tag: a second podman push recompresses and gets a new
+          # digest, which the signature below wouldn't cover.
           podman push --digestfile=/tmp/digest "$IMAGE:$VERSION"
-          podman push "$IMAGE:latest"
-          echo "digest=$(< /tmp/digest)" >> "$GITHUB_OUTPUT"
+          digest=$(< /tmp/digest)
+          skopeo copy --preserve-digests --dest-creds "$GITHUB_ACTOR:$TOKEN" \
+            "docker://$IMAGE@$digest" "docker://$IMAGE:latest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         if: steps.push.outcome == 'success'
@@ -137,3 +141,5 @@ jobs:
           # (containers/container-libs#388, coreos/rpm-ostree#5509).
           cosign sign -y --new-bundle-format=false --use-signing-config=false \
             --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
+          [ "$(skopeo inspect --format '{{.Digest}}' "docker://$IMAGE:latest")" = "$DIGEST" ]
+          cosign verify --key cosign.pub "$IMAGE:latest" > /dev/null
