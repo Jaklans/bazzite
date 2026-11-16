@@ -1,0 +1,3 @@
+docker:
+  ghcr.io/jaklans:
+    use-sigstore-attachments: true

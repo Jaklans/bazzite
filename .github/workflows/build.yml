@@ -1,0 +1,107 @@
+name: build
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md']
+  schedule:
+    - cron: '20 */6 * * *'  # rebuild only when the Bazzite base moved (see "check")
+  workflow_dispatch:
+
+env:
+  BASE: ghcr.io/ublue-os/bazzite-deck-nvidia:stable
+  IMAGE: ghcr.io/jaklans/bazzite-deck-nvidia
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check base
+        id: check
+        run: |
+          set -euo pipefail
+          digest=$(skopeo inspect --format '{{.Digest}}' "docker://$BASE")
+          version=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://${BASE%:*}@$digest")
+          echo "base $digest ($version)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "fedora=${version%%.*}" >> "$GITHUB_OUTPUT"
+          build=true
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            ours=$(skopeo inspect "docker://$IMAGE:latest" 2>/dev/null \
+              | jq -r '.Labels["org.opencontainers.image.base.digest"] + " " + .Labels["org.opencontainers.image.revision"]' || true)
+            [ "$ours" = "$digest $GITHUB_SHA" ] && build=false
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "build: $build"
+
+      - name: Maximize build space
+        if: steps.check.outputs.build == 'true'
+        uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
+
+      - name: Build
+        if: steps.check.outputs.build == 'true'
+        env:
+          DIGEST: ${{ steps.check.outputs.digest }}
+          VERSION: ${{ steps.check.outputs.version }}
+          FEDORA: ${{ steps.check.outputs.fedora }}
+        run: |
+          set -euxo pipefail
+          podman build \
+            --build-arg "BASE_IMAGE=${BASE%:*}@$DIGEST" \
+            --build-arg "FEDORA=$FEDORA" \
+            --label "org.opencontainers.image.base.name=$BASE" \
+            --label "org.opencontainers.image.base.digest=$DIGEST" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.url=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.title=bazzite-deck-nvidia (NM wake patch)" \
+            --label "org.opencontainers.image.description=Bazzite deck-nvidia with NetworkManager patched to keep WoWLAN wifi up across suspend" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --tag "$IMAGE:latest" --tag "$IMAGE:$VERSION" \
+            --file Containerfile .
+          podman run --rm --entrypoint rpm "$IMAGE:latest" -q NetworkManager
+
+      - name: Push
+        id: push
+        if: steps.check.outputs.build == 'true' && github.ref == 'refs/heads/main'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          podman push --digestfile=/tmp/digest "$IMAGE:$VERSION"
+          podman push "$IMAGE:latest"
+          echo "digest=$(< /tmp/digest)" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        if: steps.push.outcome == 'success'
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: 'v3.1.4'
+
+      - name: Sign
+        if: steps.push.outcome == 'success'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ''
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$TOKEN" | cosign login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Old bundle format: rpm-ostree/containers-image can't read the new one yet
+          # (containers/container-libs#388, coreos/rpm-ostree#5509).
+          cosign sign -y --new-bundle-format=false --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"

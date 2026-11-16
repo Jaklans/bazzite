@@ -1,0 +1,46 @@
+--- a/src/core/nm-manager.c
++++ b/src/core/nm-manager.c
+@@ -2290,6 +2290,18 @@
+     return nm_platform_link_get_wake_on_lan(platform, ifindex);
+ }
+ 
++static gboolean
++device_kept_over_suspend(NMPlatform *platform, NMDevice *device)
++{
++    /* A Wake-on-LAN/WLAN device stayed up through suspend. If it is still
++     * activated and was never taken down, keep the connection and only
++     * refresh its dynamic IP configuration instead of a full reconnect. */
++    return !nm_device_is_software(device)
++           && !nm_device_get_unmanaged_flags(device, NM_UNMANAGED_MANAGER_DISABLED)
++           && nm_device_get_state(device) == NM_DEVICE_STATE_ACTIVATED
++           && device_is_wake_on_lan(platform, device);
++}
++
+ static void
+ remove_device(NMManager *self, NMDevice *device, gboolean quitting)
+ {
+@@ -7373,7 +7385,8 @@
+                 /* Belatedly take down Wake-on-LAN devices; ideally we wouldn't have to do this
+                  * but for now it's the only way to make sure we re-check their connectivity.
+                  */
+-                if (device_is_wake_on_lan(priv->platform, device))
++                if (device_is_wake_on_lan(priv->platform, device)
++                    && !device_kept_over_suspend(priv->platform, device))
+                     nm_device_set_unmanaged_by_flags(device,
+                                                      NM_UNMANAGED_MANAGER_DISABLED,
+                                                      NM_UNMAN_FLAG_OP_SET_UNMANAGED,
+@@ -7431,6 +7444,14 @@
+                     nm_device_set_enabled(device, enabled);
+             }
+ 
++            if (waking_from_suspend && device_kept_over_suspend(priv->platform, device)) {
++                _LOGI(LOGD_SUSPEND,
++                      "sleep: device %s kept its connection over suspend, renewing IP config",
++                      nm_device_get_ip_iface(device));
++                nm_device_update_dynamic_ip_setup(device, "wake up");
++                continue;
++            }
++
+             /* The reason determines whether the device will be managed_type=managed
+              * or managed_type=external. Pass the correct reason to restore the state
+              * that was set before sleeping. */
