@@ -91,7 +91,11 @@ jobs:
           if skopeo inspect --raw "docker://$IMAGE:latest" >/dev/null 2>&1; then
             args+=(--previous-build "docker://$IMAGE:latest")
           fi
+          # The chunker runs inside the new image, whose policy wants signatures on our repo. The
+          # previous build only steers the layer plan, so don't make it a reason to fail.
+          echo '{"default":[{"type":"insecureAcceptAnything"}]}' > /tmp/rechunk-policy.json
           podman run --rm --pull=never --privileged \
+            -v /tmp/rechunk-policy.json:/etc/containers/policy.json:ro \
             --mount=type=image,src="$IMAGE:latest",target=/rpm-ostree \
             --mount=type=bind,src="$graphroot",target=/run/host-container-storage,rw \
             --mount=type=tmpfs,target=/run/rpm-ostree-storage \
