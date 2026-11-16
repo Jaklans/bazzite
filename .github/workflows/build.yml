@@ -60,14 +60,6 @@ jobs:
           podman build \
             --build-arg "BASE_IMAGE=${BASE%:*}@$DIGEST" \
             --build-arg "FEDORA=$FEDORA" \
-            --label "org.opencontainers.image.base.name=$BASE" \
-            --label "org.opencontainers.image.base.digest=$DIGEST" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.url=https://github.com/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.title=bazzite-deck-nvidia (NM wake patch)" \
-            --label "org.opencontainers.image.description=Bazzite deck-nvidia with NetworkManager patched to keep WoWLAN wifi up across suspend" \
-            --label "org.opencontainers.image.version=$VERSION" \
             --tag "$IMAGE:latest" --tag "$IMAGE:$VERSION" \
             --file Containerfile .
           podman run --rm --entrypoint rpm "$IMAGE:latest" -q NetworkManager
@@ -78,10 +70,27 @@ jobs:
       - name: Rechunk
         if: steps.check.outputs.build == 'true'
         env:
+          DIGEST: ${{ steps.check.outputs.digest }}
           VERSION: ${{ steps.check.outputs.version }}
         run: |
           set -euxo pipefail
           graphroot=$(podman info --format '{{.Store.GraphRoot}}')
+          # The chunker writes a fresh config, so labels go here.
+          args=(
+            --label "org.opencontainers.image.base.name=$BASE"
+            --label "org.opencontainers.image.base.digest=$DIGEST"
+            --label "org.opencontainers.image.revision=$GITHUB_SHA"
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
+            --label "org.opencontainers.image.url=https://github.com/$GITHUB_REPOSITORY"
+            --label "org.opencontainers.image.title=bazzite-deck-nvidia (NM wake patch)"
+            --label "org.opencontainers.image.description=Bazzite deck-nvidia with NetworkManager patched to keep WoWLAN wifi up across suspend"
+            --label "org.opencontainers.image.version=$VERSION"
+            --label "ostree.bootable=true"
+          )
+          # Keep the previous build's layer plan so updates only fetch changed chunks.
+          if skopeo inspect --raw "docker://$IMAGE:latest" >/dev/null 2>&1; then
+            args+=(--previous-build "docker://$IMAGE:latest")
+          fi
           podman run --rm --pull=never --privileged \
             --mount=type=image,src="$IMAGE:latest",target=/rpm-ostree \
             --mount=type=bind,src="$graphroot",target=/run/host-container-storage,rw \
@@ -89,11 +98,11 @@ jobs:
             --entrypoint /usr/bin/rpm-ostree \
             "$IMAGE:latest" \
             compose build-chunked-oci \
-            --max-layers 127 --format-version=2 --bootc \
+            --max-layers 127 --format-version=2 --bootc "${args[@]}" \
             --rootfs /rpm-ostree \
             --output "containers-storage:[overlay@/run/host-container-storage+/run/rpm-ostree-storage]$IMAGE:latest"
           podman tag "$IMAGE:latest" "$IMAGE:$VERSION"
-          podman inspect "$IMAGE:latest" --format '{{index .Labels "org.opencontainers.image.base.digest"}} {{index .Labels "ostree.bootable"}}'
+          podman inspect "$IMAGE:latest" --format '{{index .Labels "org.opencontainers.image.base.digest"}} {{index .Labels "org.opencontainers.image.version"}}'
 
       - name: Push
         id: push
