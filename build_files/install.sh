@@ -12,7 +12,8 @@ while read -r name arch src; do
     f=$(ls /nm/"$name"-[0-9]*."$arch".rpm)
     pkgs+=("$f")
 done < <(rpm -qa --qf '%{NAME} %{ARCH} %{SOURCERPM}\n' 'NetworkManager*')
-rpm -Uvh --replacefiles "${pkgs[@]}"
+# Unsigned: built in the previous stage of this Containerfile, and Bazzite enforces signatures.
+rpm -Uvh --replacefiles --nosignature "${pkgs[@]}"
 rpm -q NetworkManager | grep -q '\.wowlan1\.'
 
 install -Dm644 /ctx/system_files/etc/pki/containers/jaklans.pub /etc/pki/containers/jaklans.pub
